@@ -85,17 +85,35 @@ sudo pgcacher -pid <container_pid> -enhanced-ns -verbose
 
 ## 安装
 
-目前暂未提供预编译二进制（后续考虑通过 GitHub Releases + GitHub Actions 发布），请自行从源码构建：
+### 1. 下载预编译二进制（推荐）
+
+每次 `v*` 标签会通过 GitHub Actions + goreleaser 自动发布 `linux/amd64` 和 `linux/arm64` 两个架构的 `tar.gz` 包，并附带 `checksums.txt`。
+
+```bash
+# 选择最新版本： https://github.com/ForceInjection/pgcacher/releases/latest
+VERSION=v0.4.0
+ARCH=$(uname -m)   # x86_64 或 aarch64 → 替换为 arm64
+[ "$ARCH" = "aarch64" ] && ARCH=arm64
+
+curl -LO https://github.com/ForceInjection/pgcacher/releases/download/${VERSION}/pgcacher_${VERSION}_Linux_${ARCH}.tar.gz
+tar -xzf pgcacher_${VERSION}_Linux_${ARCH}.tar.gz
+sudo install -m 0755 pgcacher /usr/local/bin/pgcacher
+pgcacher -h
+```
+
+如需校验完整性，下载同一发布页面的 `checksums.txt` 并运行 `sha256sum -c checksums.txt`。
+
+### 2. 从源码构建
 
 ```sh
 git clone https://github.com/ForceInjection/pgcacher.git
 cd pgcacher
-make build
+make build        # 交叉编译 linux/amd64
 sudo cp pgcacher /usr/local/bin/
 pgcacher -h
 ```
 
-`make build` 会交叉编译出 `linux/amd64` 二进制；如需本地平台构建（例如在 Linux 机器上直接编译）可改用 `go build .`。
+如需在 Linux 主机上直接编译可改用 `go build .`（需 Go 1.21+）。
 
 ## 示例
 
