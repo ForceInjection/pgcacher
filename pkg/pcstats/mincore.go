@@ -18,6 +18,7 @@ package pcstats
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"unsafe"
 
@@ -33,16 +34,19 @@ type Mincore struct {
 // return it as an []bool
 func GetFileMincore(f *os.File, size int64) (*Mincore, error) {
 	//skip could not mmap error when the file size is 0
-	if int(size) == 0 {
+	if size == 0 {
 		return nil, nil
+	}
+	// guard against int truncation on 32-bit systems when file size exceeds int range
+	if size < 0 || uint64(size) > uint64(math.MaxInt) {
+		return nil, fmt.Errorf("file size %d exceeds addressable range on this platform", size)
 	}
 	// mmap is a []byte
 	mmap, err := unix.Mmap(int(f.Fd()), 0, int(size), unix.PROT_NONE, unix.MAP_SHARED)
 	if err != nil {
 		return nil, fmt.Errorf("could not mmap: %v", err)
 	}
-	// TODO: check for MAP_FAILED which is ((void *) -1)
-	// but maybe unnecessary since it looks like errno is always set when MAP_FAILED
+	defer unix.Munmap(mmap)
 
 	// one byte per page, only LSB is used, remainder is reserved and clear
 	vecsz := (size + int64(os.Getpagesize()) - 1) / int64(os.Getpagesize())
@@ -64,7 +68,6 @@ func GetFileMincore(f *os.File, size int64) (*Mincore, error) {
 	if ret != 0 {
 		return nil, fmt.Errorf("syscall SYS_MINCORE failed: %v", err)
 	}
-	defer unix.Munmap(mmap)
 
 	value := new(Mincore)
 	for _, b := range vec {

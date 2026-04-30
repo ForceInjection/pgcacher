@@ -37,6 +37,19 @@ type PcStatus struct {
 	Percent   float64   `json:"percent"`   // percentage of pages cached
 }
 
+// IsBlockDevice reports whether path refers to a block-special file (e.g.
+// /dev/sda, /dev/nvme0n1, /dev/loop0, /dev/dm-0). It distinguishes block
+// devices from character devices (ModeCharDevice) because only block devices
+// carry page-cache pages that mincore(2) can report on.
+func IsBlockDevice(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	mode := info.Mode()
+	return mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0, nil
+}
+
 func GetPcStatus(fname string, filter func(f *os.File) error) (PcStatus, error) {
 	pcs := PcStatus{Name: fname}
 
@@ -63,11 +76,23 @@ func GetPcStatus(fname string, filter func(f *os.File) error) (PcStatus, error) 
 		return pcs, errors.New("file is a directory")
 	}
 
-	pcs.Size = finfo.Size()
+	// For block devices, fstat.Size() returns 0; mincore needs the real
+	// size of the device, which must be obtained via the BLKGETSIZE64 ioctl.
+	// See the Linux-only helper in blockdev_linux.go.
+	isBlock := finfo.Mode()&os.ModeDevice != 0 && finfo.Mode()&os.ModeCharDevice == 0
+	if isBlock {
+		size, err := getBlockDeviceSize(fname)
+		if err != nil {
+			return pcs, fmt.Errorf("could not determine block device size for %q: %v", fname, err)
+		}
+		pcs.Size = size
+	} else {
+		pcs.Size = finfo.Size()
+	}
 	pcs.Timestamp = time.Now()
 	pcs.Mtime = finfo.ModTime()
 
-	mincore, err := GetFileMincore(f, finfo.Size())
+	mincore, err := GetFileMincore(f, pcs.Size)
 	if err != nil {
 		return pcs, err
 	}
