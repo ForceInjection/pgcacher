@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	"os"
 	"path"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -26,11 +26,11 @@ type pgcacher struct {
 }
 
 func (pg *pgcacher) ignoreFile(file string) bool {
-	if pg.option.excludeFiles != "" && wildcardMatch(file, pg.option.excludeFiles) {
+	if pg.option.excludeFiles != "" && wildcardMatchMulti(file, pg.option.excludeFiles) {
 		return true
 	}
 
-	if pg.option.includeFiles != "" && !wildcardMatch(file, pg.option.includeFiles) {
+	if pg.option.includeFiles != "" && !wildcardMatchMulti(file, pg.option.includeFiles) {
 		return true
 	}
 
@@ -60,18 +60,60 @@ func (pg *pgcacher) appendProcessFiles(pid int) {
 }
 
 func (pg *pgcacher) getProcessFiles(pid int) []string {
-	// switch mount namespace for container.
-	pcstats.SwitchMountNs(pg.option.pid)
+	// Fast path: if we are not using enhanced (pid-namespace) switching and the
+	// target pid already shares our mount namespace, no setns is required.
+	// Reading directly from the caller's goroutine avoids spawning a throwaway
+	// OS thread for every pid in top mode, which is the common case for
+	// non-containerised host processes.
+	if !pg.option.enhancedNs && pcstats.SameMountNamespace(pid) {
+		return pg.readProcessFiles(pid)
+	}
 
-	// get files of `/proc/{pid}/fd` and `/proc/{pid}/maps`
+	// Slow path: a mount (and possibly pid) namespace switch may happen.
+	//
+	// setns(CLONE_NEWNS) mutates the current OS thread's namespace view. If we
+	// simply LockOSThread + UnlockOSThread around the switch, the Go runtime
+	// returns the polluted thread to its scheduler pool and any later
+	// goroutine scheduled onto it would observe the container's /proc and
+	// filesystem instead of the host's.
+	//
+	// To contain the pollution we run the switch and the subsequent /proc
+	// reads on a dedicated throwaway goroutine that locks its OS thread and
+	// never unlocks it. When the goroutine exits, the Go runtime terminates
+	// the locked thread instead of recycling it, so the foreign namespace
+	// cannot leak to unrelated work.
+	ch := make(chan []string, 1)
+	go func() {
+		runtime.LockOSThread()
+		// Intentionally no runtime.UnlockOSThread here — see comment above.
+
+		if pg.option.enhancedNs {
+			if err := pcstats.SwitchToContainerContext(pid, pg.option.verbose); err != nil {
+				if pg.option.verbose {
+					log.Printf("Enhanced namespace switching failed, falling back to basic mode: %v", err)
+				}
+				pcstats.SwitchMountNs(pid)
+			}
+		} else {
+			pcstats.SwitchMountNs(pid)
+		}
+
+		ch <- pg.readProcessFiles(pid)
+	}()
+	return <-ch
+}
+
+// readProcessFiles reads the open-file descriptors and memory map entries of
+// pid out of /proc and returns their combined target paths. It does not touch
+// namespaces, so it is safe to call either from the caller's goroutine (fast
+// path) or from a dedicated throwaway thread after a setns (slow path).
+func (pg *pgcacher) readProcessFiles(pid int) []string {
 	processFiles := pg.getProcessFdFiles(pid)
 	processMapFiles := pg.getProcessMaps(pid)
 
-	// append
 	var files []string
 	files = append(files, processFiles...)
 	files = append(files, processMapFiles...)
-
 	return files
 }
 
@@ -98,7 +140,7 @@ func (pg *pgcacher) getProcessMaps(pid int) []string {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Fatalf("reading '%s' failed: %s", fname, err)
+		log.Printf("reading '%s' failed: %s", fname, err)
 	}
 
 	return out
@@ -121,18 +163,33 @@ func (pg *pgcacher) getProcessFdFiles(pid int) []string {
 	readlink := func(file fs.DirEntry) {
 		fpath := fmt.Sprintf("%s/%s", dpath, file.Name())
 		target, err := os.Readlink(fpath)
+		if err != nil {
+			log.Printf("can not read link '%s', err: %v\n", fpath, err)
+			return
+		}
 		if !strings.HasPrefix(target, "/") { // ignore socket or pipe.
 			return
 		}
-		if strings.HasPrefix(target, "/dev") { // ignore devices
-			return
+		if strings.HasPrefix(target, "/dev") {
+			// character devices (ttys, /dev/null, /dev/urandom, ...) have no
+			// page cache; skip them unconditionally. Block devices (/dev/sdX,
+			// /dev/nvmeXnY, loop*, dm-*) DO carry page cache for raw I/O, but
+			// stat'ing every /dev/* fd and then issuing an ioctl for size is
+			// expensive and surprising, so we only include them when the user
+			// opts in via -statblockdev.
+			if !pg.option.statBlockdev {
+				return
+			}
+			isBlock, err := pcstats.IsBlockDevice(fpath)
+			if err != nil {
+				log.Printf("cannot determine if %q is a block device, err: %v\n", fpath, err)
+				return
+			}
+			if !isBlock {
+				return
+			}
 		}
 		if pg.ignoreFile(target) {
-			return
-		}
-
-		if err != nil {
-			log.Printf("can not read link '%s', err: %v\n", fpath, err.Error())
 			return
 		}
 
@@ -186,6 +243,14 @@ func (pg *pgcacher) getPageCacheStats() PcStatusList {
 		fs, err := file.Stat()
 		if err != nil {
 			return err
+		}
+		// Block devices report Size()==0 from fstat; real size is resolved later
+		// via BLKGETSIZE64 inside GetPcStatus. Skip the -least-size filter here to
+		// avoid dropping every block device when -statblockdev is combined with a
+		// positive threshold.
+		mode := fs.Mode()
+		if mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0 {
+			return nil
 		}
 		if pg.leastSize != 0 && fs.Size() < pg.leastSize {
 			return errLessThanSize
@@ -291,6 +356,9 @@ func (pg *pgcacher) handleTop() {
 
 		}()
 	}
+	// wg.Wait() establishes a happens-before edge: all mutex-protected
+	// appends to pg.files by the worker goroutines are guaranteed to be
+	// visible after this point, so filterFiles can safely read pg.files.
 	wg.Wait()
 
 	// filter files
@@ -303,11 +371,17 @@ func (pg *pgcacher) handleTop() {
 	pg.output(stats, pg.option.limit)
 }
 
-func min(x, y int) int {
-	if x < y {
-		return x
+func wildcardMatchMulti(s, patterns string) bool {
+	for _, p := range strings.Split(patterns, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if wildcardMatch(s, p) {
+			return true
+		}
 	}
-	return y
+	return false
 }
 
 func wildcardMatch(s string, p string) bool {
@@ -367,13 +441,7 @@ func walkDirs(dirs []string, maxDepth int) []string {
 
 	var files []string
 	for _, dir := range dirs {
-		fi, err := os.Open(dir)
-		if err != nil {
-			files = append(files, dir)
-			continue
-		}
-
-		fs, err := fi.Stat()
+		fs, err := os.Stat(dir)
 		if err != nil {
 			files = append(files, dir)
 			continue
@@ -393,12 +461,12 @@ func walkDirs(dirs []string, maxDepth int) []string {
 }
 
 func walkDir(dir string, depth int, maxDepth int) []string {
-	if depth >= maxDepth {
+	if depth > maxDepth {
 		return nil
 	}
 
 	var files []string
-	ofiles, err := ioutil.ReadDir(dir)
+	ofiles, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
