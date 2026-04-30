@@ -22,3 +22,10 @@ package pcstats
 func SwitchMountNs(pid int) {
 	return
 }
+
+// SameMountNamespace is a no-op stub on non-Linux platforms where mount
+// namespaces do not exist: callers always stay in their current namespace,
+// so we report "same" and let them read files without attempting a switch.
+func SameMountNamespace(pid int) bool {
+	return true
+}
