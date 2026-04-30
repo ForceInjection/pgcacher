@@ -1,46 +1,97 @@
-## pgcacher 
+# pgcacher
 
-`pgcacher` is used to get page cache statistics for files. Use the **pgcacher** command to know how much cache space the fd of the specified process occupies in the page cache.  Use **pgcacher** to know whether the specified file list is cached in the page cache, and how much space is cached.
+`pgcacher` 用于获取文件的 page cache 统计信息。使用 **pgcacher** 命令可以了解指定进程的 fd 在 page cache 中占用了多少缓存空间。使用 **pgcacher** 可以了解指定文件列表是否被缓存在 page cache 中，以及被缓存的空间大小。
 
-Compared with pcstat, `pgcacher` has fixed the problem that the file list of the process is incorrect. It used to be obtained through `/proc/{pid}/maps`, but now it is changed to obtain from `/proc/{pid}/maps` and `/proc/{pid}/fd` at the same time. pgcacher supports more parameters, such as top, worker, limit, depth, least-size, exclude-files and include-files. 😁
+相比 pcstat，`pgcacher` 修复了进程文件列表不正确的问题。以前仅通过 `/proc/{pid}/maps` 获取，现在改为同时从 `/proc/{pid}/maps` 和 `/proc/{pid}/fd` 获取。pgcacher 支持更多参数，例如 top、worker、limit、depth、least-size、exclude-files 和 include-files。😁
 
-In addition, the pgcacher code is more robust, and also supports concurrency parameters, which can calculate the cache occupancy in the page cache faster. 
+此外，pgcacher 的代码更加健壮，并且支持并发参数，可以更快速地计算 page cache 中的缓存占用情况。
 
-🚀 pgcacher has better performance than pcstat, and the performance gap becomes more obvious as the number of files increases. Can be up to 5x faster than pcstat for most scenarios.
+🚀 pgcacher 比 pcstat 性能更好，并且随着文件数量的增加，性能差距会越来越明显。在大多数场景下，可达到 pcstat 的 5 倍速度。
 
-> the some code of `pkg/pcstats` copy from pcstat and hcache.
+> `pkg/pcstats` 中的部分代码改编自 pcstat 和 hcache。
 
-## Usage
+## 使用说明
 
 ```sh
-pgcacher <-json <-pps>|-terse|-default> <-nohdr> <-bname> file file file
-    -limit limit the number of files displayed, default: 500
-    -depth set the depth of dirs to scan, default: 0
-    -worker concurrency workers, default: 2
-    -pid show all open maps for the given pid
-    -top scan the open files of all processes, show the top few files that occupy the most memory space in the page cache, default: false
-    -lease-size ignore files smaller than the lastSize, such as '10MB' and '15GB'
-    -exclude-files exclude the specified files by wildcard, such as 'a*c?d' and '*xiaorui*,rfyiamcool'
-    -include-files only include the specified files by wildcard, such as 'a*c?d' and '*xiaorui?cc,rfyiamcool'
-    -json output will be JSON
-    -pps include the per-page information in the output (can be huge!)
-    -terse print terse machine-parseable output
-    -histo print a histogram using unicode block characters
-    -nohdr don't print the column header in terse or default format
-    -bname use basename(file) in the output (use for long paths)
-    -plain return data with no box characters
-    -unicode return data with unicode box characters
+pgcacher <-json|-terse|-default> <-bname> file file file
+    -limit 限制显示的文件数量，默认值：500
+    -depth 设置扫描目录的深度，默认值：0
+    -worker 并发 worker 数量，默认值：2
+    -pid 显示指定 pid 打开的所有文件（同时读取 /proc/{pid}/fd 与 /proc/{pid}/maps）
+    -container 要分析的容器 ID（>=12 位十六进制字符）；通过 /proc/<pid>/cgroup 解析为宿主机 PID，无需 docker/nsenter
+    -top 扫描所有进程打开的文件，显示在 page cache 中占用内存空间最多的前几个文件，默认值：false
+    -least-size 忽略小于 leastSize 的文件，例如 '10MB' 和 '15GB'
+    -exclude-files 通过通配符排除指定文件，例如 'a*c?d' 和 '*xiaorui*,rfyiamcool'
+    -include-files 通过通配符仅包含指定文件，例如 'a*c?d' 和 '*xiaorui?cc,rfyiamcool'
+    -statblockdev 纳入进程持有的块设备（/dev/sdX、/dev/nvmeXnY、loop*、dm-* 等）的 page cache；默认关闭。开启后会对每个 /dev/* fd 执行 stat + BLKGETSIZE64 ioctl 以获取真实大小，可能显著变慢
+    -enhanced-ns 启用增强型命名空间切换以获得更好的容器支持
+    -verbose 启用详细日志以调试命名空间操作
+    -json 以 JSON 格式输出
+    -terse 打印简洁的机器可解析输出
+    -bname 在输出中使用 basename(file)（适用于长路径）
+    -plain 返回不带框线字符的数据
+    -unicode 返回带 unicode 框线字符的数据
 ```
 
-## Install
+## 容器环境支持
 
-### source code compilation
+`pgcacher` 为容器化环境提供了一流的支持。当分析运行在容器内的进程时，您有以下几种选择：
+
+### 1. 内置 `-container` 参数（推荐）
+
+无需 `docker`、`nsenter` 或包装脚本。`pgcacher` 通过扫描 `/proc/<pid>/cgroup` 将容器 ID 解析为宿主机 PID，并自动启用跨命名空间切换。
+
+```bash
+# 接受完整或截断的容器 ID（>=12 位十六进制字符），
+# 支持 Docker、containerd、CRI-O、Podman 和 Kubernetes。
+sudo pgcacher -container <container_id> -top -limit 10
+```
+
+### 2. 使用 nsenter
+
+```bash
+# 获取容器主进程在宿主机上的 PID
+CONTAINER_PID=$(docker inspect --format '{{.State.Pid}}' <container_name>)
+
+# 使用 nsenter 进入容器的 mount / pid 命名空间后运行 pgcacher；
+# 进入容器 PID namespace 后，容器主进程对应 PID 为 1
+sudo nsenter -t $CONTAINER_PID -m -p pgcacher -pid 1
+```
+
+### 3. 使用提供的脚本
+
+```bash
+# 赋予脚本可执行权限
+chmod +x scripts/pgcacher-container.sh
+
+# 通过容器名称运行
+./scripts/pgcacher-container.sh -c <container_name>
+
+# 通过容器 ID 运行
+./scripts/pgcacher-container.sh -i <container_id>
+
+# 通过指定 PID 和附加参数运行
+./scripts/pgcacher-container.sh -p <pid> -a "-top -limit 10"
+```
+
+### 4. 增强型命名空间切换（实验性）
+
+```bash
+# 为已知的宿主机 PID 启用增强型命名空间切换
+sudo pgcacher -pid <container_pid> -enhanced-ns -verbose
+```
+
+有关详细用法示例和故障排查，请参阅 [docs/container-usage.md](docs/container-usage.md)。
+
+## 安装
+
+### 源码编译
 
 ```sh
 git clone https://github.com/rfyiamcool/pgcacher.git
 cd pgcacher
 make build
-sudo cp pgcacher /usr/local/bin/ 
+sudo cp pgcacher /usr/local/bin/
 pgcacher -h
 ```
 
@@ -48,109 +99,148 @@ pgcacher -h
 
 [https://github.com/rfyiamcool/pgcacher/releases](https://github.com/rfyiamcool/pgcacher/releases)
 
-1. download package from github releases url.
-2. decompress the package.
-3. copy `pgcacher` to `/usr/local/bin`.
+1. 从 github releases 页面下载安装包。
+2. 解压安装包。
+3. 将 `pgcacher` 复制到 `/usr/local/bin`。
 
-### use binary directly
+### 直接使用二进制文件
 
-test pass on ubuntu, centos 7.x and centos 8.x.
+已在 Ubuntu、CentOS 7.x 和 CentOS 8.x 上测试通过。
 
-```
+```bash
 wget xiaorui-cc.oss-cn-hangzhou.aliyuncs.com/files/pgcacher
 chmod 777 pgcacher
 \cp pgcacher /usr/local/bin
 ```
 
-## Usage
+## 示例
 
+以下示例均在 Linux 服务器（CentOS 8.x，内核 4.18，Kubernetes + containerd 节点）上实际运行采集，非模拟数据。
+
+### 准备测试文件
+
+```bash
+# 生成三个随机内容的文件并读入 page cache
+mkdir -p demo
+dd if=/dev/urandom of=demo/sample_256m bs=1M count=256
+dd if=/dev/urandom of=demo/sample_128m bs=1M count=128
+dd if=/dev/urandom of=demo/sample_64m  bs=1M count=64
+cat demo/sample_256m demo/sample_128m demo/sample_64m > /dev/null
 ```
-# sudo pgcacher -pid=29260 -worker=5
-+-------------------+----------------+-------------+----------------+-------------+---------+
-| Name              | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
-|-------------------+----------------+-------------+----------------+-------------+---------|
-| /root/rui/file4g  | 3.906G         | 1024000     | 3.906G         | 1024000     | 100.000 |
-| /root/rui/file3g  | 2.930G         | 768000      | 2.930G         | 768000      | 100.000 |
-| /root/rui/file2g  | 1.953G         | 512000      | 1.953G         | 512000      | 100.000 |
-| /root/rui/file1g  | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-| /root/rui/open_re | 1.791M         | 459         | 1.791M         | 459         | 100.000 |
-|-------------------+----------------+-------------+----------------+-------------+---------|
-│ Sum               │ 9.767G         │ 2560459     │ 9.767G         │ 2560459     │ 100.000 │
-+-------------------+----------------+-------------+----------------+-------------+---------+
 
-# dd if=/dev/urandom of=file1g bs=1M count=1000
-# dd if=/dev/urandom of=file2g bs=1M count=2000
-# dd if=/dev/urandom of=file3g bs=1M count=3000
-# dd if=/dev/urandom of=file4g bs=1M count=4000
-# cat file1g file2g file3g file4g > /dev/null
+### 1. 文件模式（默认 ASCII 表格）
 
-# sudo pgcacher file1g file2g file3g file4g
-+--------+----------------+-------------+----------------+-------------+---------+
-| Name   | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
-|--------+----------------+-------------+----------------+-------------+---------|
-| file4g | 3.906G         | 1024000     | 3.906G         | 1024000     | 100.000 |
-| file3g | 2.930G         | 768000      | 2.930G         | 768000      | 100.000 |
-| file2g | 1.953G         | 512000      | 1.953G         | 512000      | 100.000 |
-| file1g | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-|--------+----------------+-------------+----------------+-------------+---------|
-│ Sum    │ 9.766G         │ 2560000     │ 9.766G         │ 2560000     │ 100.000 │
-+--------+----------------+-------------+----------------+-------------+---------+
-
-# sudo pgcacher /root/rui/*
-
-+------------+----------------+-------------+----------------+-------------+---------+
-| Name       | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
-|------------+----------------+-------------+----------------+-------------+---------|
-| file4g     | 3.906G         | 1024000     | 3.906G         | 1024000     | 100.000 |
-| file3g     | 2.930G         | 768000      | 2.930G         | 768000      | 100.000 |
-| file2g     | 1.953G         | 512000      | 1.953G         | 512000      | 100.000 |
-| testfile   | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-| file1g     | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-| pgcacher   | 2.440M         | 625         | 2.440M         | 625         | 100.000 |
-| open_re    | 1.791M         | 459         | 1.791M         | 459         | 100.000 |
-| cache.go   | 19.576K        | 5           | 19.576K        | 5           | 100.000 |
-| open_re.go | 644B           | 1           | 644B           | 1           | 100.000 |
-| nohup.out  | 957B           | 1           | 957B           | 1           | 100.000 |
-|------------+----------------+-------------+----------------+-------------+---------|
-│ Sum        │ 10.746G        │ 2817091     │ 10.746G        │ 2817091     │ 100.000 │
-+------------+----------------+-------------+----------------+-------------+---------+
-
-# sudo pgcacher -top -limit 3
-
+```text
+$ sudo pgcacher demo/sample_256m demo/sample_128m demo/sample_64m
 +------------------+----------------+-------------+----------------+-------------+---------+
 | Name             | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
 |------------------+----------------+-------------+----------------+-------------+---------|
-| /root/rui/file4g | 3.906G         | 1024000     | 3.906G         | 1024000     | 100.000 |
-| /root/rui/file3g | 2.930G         | 768000      | 2.930G         | 768000      | 100.000 |
-| /root/rui/file2g | 1.953G         | 512000      | 1.953G         | 512000      | 100.000 |
+| demo/sample_256m | 256.000M       | 65536       | 254.500M       | 65152       | 99.414  |
+| demo/sample_128m | 128.000M       | 32768       | 128.000M       | 32768       | 100.000 |
+| demo/sample_64m  | 64.000M        | 16384       | 64.000M        | 16384       | 100.000 |
 |------------------+----------------+-------------+----------------+-------------+---------|
-│ Sum              │ 8.789G         │ 2304000     │ 8.789G         │ 2304000     │ 100.000 │
+│ Sum              │ 448.000M       │ 114688      │ 446.500M       │ 114304      │ 99.665  │
 +------------------+----------------+-------------+----------------+-------------+---------+
-
-# sudo pgcacher -depth=4 aaa/
-
-+---------------------+----------------+-------------+----------------+-------------+---------+
-| Name                | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
-|---------------------+----------------+-------------+----------------+-------------+---------|
-| aaa/a2g             | 1.953G         | 512000      | 1.953G         | 512000      | 100.000 |
-| aaa/bbb/ccc/ddd/d2g | 1.953G         | 512000      | 1.940G         | 508531      | 99.322  |
-| aaa/bbb/ccc/c1g     | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-| aaa/bbb/ccc/c2g     | 1.953G         | 512000      | 1000.000M      | 256000      | 50.000  |
-| aaa/bbb/ccc/ddd/d1g | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-| aaa/a1g             | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-| aaa/bbb/bbb1g       | 1000.000M      | 256000      | 1000.000M      | 256000      | 100.000 |
-| aaa/bbb/bbb2g       | 1.953G         | 512000      | 1000.000M      | 256000      | 50.000  |
-|---------------------+----------------+-------------+----------------+-------------+---------|
-│ Sum                 │ 11.719G        │ 3072000     │ 9.752G         │ 2556531     │ 83.220  │
-+---------------------+----------------+-------------+----------------+-------------+---------+
 ```
 
-## pgcacher design
+> 注意：`sample_256m` 的缓存占比是 99.414%，并非精确的 100%。这是真实环境下内存压力导致少量页面被回收的正常现象。
+
+### 2. 目录递归扫描（-depth）
+
+```text
+$ sudo pgcacher -depth 2 -least-size 50MB demo/
++------------------+----------------+-------------+----------------+-------------+---------+
+| Name             | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
+|------------------+----------------+-------------+----------------+-------------+---------|
+| demo/sample_256m | 256.000M       | 65536       | 254.500M       | 65152       | 99.414  |
+| demo/sample_128m | 128.000M       | 32768       | 128.000M       | 32768       | 100.000 |
+| demo/sample_64m  | 64.000M        | 16384       | 64.000M        | 16384       | 100.000 |
+|------------------+----------------+-------------+----------------+-------------+---------|
+│ Sum              │ 448.000M       │ 114688      │ 446.500M       │ 114304      │ 99.665  │
++------------------+----------------+-------------+----------------+-------------+---------+
+```
+
+### 3. 按 PID 查看进程打开的文件（-pid）
+
+PID 1（systemd）是所有 Linux 主机都存在的进程，下例展示其动态链接库的缓存占比：
+
+```text
+$ sudo pgcacher -pid 1 -least-size 100KB -limit 8
++-------------------------------+----------------+-------------+----------------+-------------+---------+
+| Name                          | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
+|-------------------------------+----------------+-------------+----------------+-------------+---------|
+| /usr/lib64/libc-2.28.so       | 17.411M        | 4458        | 3.999M         | 1024        | 22.970  |
+| /usr/lib64/libpthread-2.28.so | 2.653M         | 680         | 2.653M         | 680         | 100.000 |
+| /usr/lib64/ld-2.28.so         | 1.401M         | 359         | 1.401M         | 359         | 100.000 |
+| /usr/lib/systemd/systemd      | 1.557M         | 399         | 1.190M         | 305         | 76.441  |
+| /usr/lib64/libmount.so.1.1.0  | 271.297K       | 68          | 271.297K       | 68          | 100.000 |
+| /usr/lib64/libblkid.so.1.1.0  | 259.352K       | 65          | 259.352K       | 65          | 100.000 |
+| /usr/lib64/liblzma.so.5.2.2   | 153.750K       | 39          | 153.750K       | 39          | 100.000 |
+| /usr/lib64/libselinux.so.1    | 152.094K       | 39          | 77.996K        | 20          | 51.282  |
+|-------------------------------+----------------+-------------+----------------+-------------+---------|
+│ Sum                           │ 23.840M        │ 6107        │ 9.989M         │ 2560        │ 41.919  │
++-------------------------------+----------------+-------------+----------------+-------------+---------+
+```
+
+> `libc-2.28.so` 仅有 22.97% 的页面驻留在缓存中，这与 glibc 通过 demand-paging 按需加载代码段的特性一致。
+
+### 4. 容器模式（-container）
+
+在 Kubernetes + containerd 节点上直接传入容器 ID，无需预先查询宿主机 PID：
+
+```text
+$ sudo pgcacher -container 75c1192030e92a808202ba8423fe82cb660ccf977d92453298336d0e2b734389 -verbose /etc/hostname
+2026/04/30 13:33:41 container 75c1192030e9...d2b734389 -> host pid 720114
+2026/04/30 13:33:41 Successfully switched to mnt namespace of pid 720114
++---------------+----------------+-------------+----------------+-------------+---------+
+| Name          | Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
+|---------------+----------------+-------------+----------------+-------------+---------|
+| /etc/hostname | 7B             | 1           | 0B             | 0           | 0.000   |
+|---------------+----------------+-------------+----------------+-------------+---------|
+│ Sum           │ 7B             │ 1           │ 0B             │ 0           │ 0.000   │
++---------------+----------------+-------------+----------------+-------------+---------+
+```
+
+> 容器 ID 通过扫描 `/proc/<pid>/cgroup` 解析为宿主机 PID（720114），随后自动切换到容器的 mount namespace 读取容器视角下的 `/etc/hostname`。
+
+### 5. Unicode 框线输出（-unicode）
+
+```text
+$ sudo pgcacher -unicode demo/sample_256m demo/sample_128m demo/sample_64m
+┌──────────────────┬────────────────┬─────────────┬────────────────┬─────────────┬─────────┐
+│ Name             │ Size           │ Pages       │ Cached Size    │ Cached Pages│ Percent │
+├──────────────────┼────────────────┼─────────────┼────────────────┼─────────────┼─────────┤
+│ demo/sample_256m │ 256.000M       │ 65536       │ 214.402M       │ 54887       │ 83.751  │
+│ demo/sample_128m │ 128.000M       │ 32768       │ 128.000M       │ 32768       │ 100.000 │
+│ demo/sample_64m  │ 64.000M        │ 16384       │ 64.000M        │ 16384       │ 100.000 │
+├──────────────────┼────────────────┼─────────────┼────────────────┼─────────────┼─────────┤
+│ Sum              │ 448.000M       │ 114688      │ 406.402M       │ 104039      │ 90.715  │
+└──────────────────┴────────────────┴─────────────┴────────────────┴─────────────┴─────────┘
+```
+
+### 6. 机器可解析格式（-json / -terse）
+
+```text
+$ sudo pgcacher -json demo/sample_256m demo/sample_128m demo/sample_64m
+[{"filename":"demo/sample_256m","size":268435456,"timestamp":"2026-04-30T13:33:10.409+08:00","mtime":"2026-04-30T13:26:18.753+08:00","pages":65536,"cached":63591,"uncached":1945,"percent":97.032},{"filename":"demo/sample_128m","size":134217728,"timestamp":"2026-04-30T13:33:10.409+08:00","mtime":"2026-04-30T13:26:19.775+08:00","pages":32768,"cached":32768,"uncached":0,"percent":100},{"filename":"demo/sample_64m","size":67108864,"timestamp":"2026-04-30T13:33:10.416+08:00","mtime":"2026-04-30T13:26:20.288+08:00","pages":16384,"cached":16384,"uncached":0,"percent":100}]
+
+$ sudo pgcacher -terse demo/sample_256m demo/sample_128m demo/sample_64m
+name,size,timestamp,mtime,pages,cached,percent
+demo/sample_256m,268435456,1777527190,1777526778,65536,61031,93.126
+demo/sample_128m,134217728,1777527190,1777526779,32768,32768,100
+demo/sample_64m,67108864,1777527190,1777526780,16384,16384,100
+```
+
+## pgcacher 设计
+
+下面两张示意图来自原作者博客，概述了整体数据流与 `mincore` 探测机制：
 
 ![](https://xiaorui-cc.oss-cn-hangzhou.aliyuncs.com/images/202303/202303121052113.png)
 
 ![](https://xiaorui-cc.oss-cn-hangzhou.aliyuncs.com/images/202303/202303131739063.png)
 
-## Thanks to
+架构、并发模型、容器/块设备支持等实现细节请参阅 [docs/design.md](docs/design.md)。
 
-@tobert for pcstat
+## 致谢
+
+@tobert 提供的 pcstat
