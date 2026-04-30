@@ -1,7 +1,10 @@
 .idea
 .git
 .vscode
+.qoder
 pgcacher
 .DS_Store
 
 dist/
+*.test
+*_test.bin
