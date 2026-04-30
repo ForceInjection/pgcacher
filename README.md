@@ -85,33 +85,17 @@ sudo pgcacher -pid <container_pid> -enhanced-ns -verbose
 
 ## 安装
 
-### 源码编译
+目前暂未提供预编译二进制（后续考虑通过 GitHub Releases + GitHub Actions 发布），请自行从源码构建：
 
 ```sh
-git clone https://github.com/rfyiamcool/pgcacher.git
+git clone https://github.com/ForceInjection/pgcacher.git
 cd pgcacher
 make build
 sudo cp pgcacher /usr/local/bin/
 pgcacher -h
 ```
 
-### github releases
-
-[https://github.com/rfyiamcool/pgcacher/releases](https://github.com/rfyiamcool/pgcacher/releases)
-
-1. 从 github releases 页面下载安装包。
-2. 解压安装包。
-3. 将 `pgcacher` 复制到 `/usr/local/bin`。
-
-### 直接使用二进制文件
-
-已在 Ubuntu、CentOS 7.x 和 CentOS 8.x 上测试通过。
-
-```bash
-wget xiaorui-cc.oss-cn-hangzhou.aliyuncs.com/files/pgcacher
-chmod 777 pgcacher
-\cp pgcacher /usr/local/bin
-```
+`make build` 会交叉编译出 `linux/amd64` 二进制；如需本地平台构建（例如在 Linux 机器上直接编译）可改用 `go build .`。
 
 ## 示例
 
