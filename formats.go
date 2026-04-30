@@ -24,6 +24,13 @@ func (a PcStatusList) Less(i, j int) bool {
 	return a[j].Cached < a[i].Cached
 }
 
+func safePercent(cached, total int64) float64 {
+	if total == 0 {
+		return 0.0
+	}
+	return (float64(cached) / float64(total)) * 100.0
+}
+
 func (stats PcStatusList) FormatUnicode() {
 	maxName := stats.maxNameLen()
 
@@ -64,7 +71,7 @@ func (stats PcStatusList) FormatUnicode() {
 	fmt.Println(hr)
 	pad = strings.Repeat(" ", maxName-len("Sum"))
 	fmt.Printf("│ %s%s │ %-15s│ %-12d│ %-15s│ %-12d│ %-7.3f │\n",
-		"Sum", pad, ConvertUnit(size_sum), page_sum, ConvertUnit(cached_size_sum), cached_page_sum, (float64(cached_page_sum)/float64(page_sum))*100.00)
+		"Sum", pad, ConvertUnit(size_sum), page_sum, ConvertUnit(cached_size_sum), cached_page_sum, safePercent(cached_page_sum, page_sum))
 	fmt.Println(bot)
 }
 
@@ -103,7 +110,7 @@ func (stats PcStatusList) FormatText() {
 	fmt.Println(hr)
 	pad = strings.Repeat(" ", maxName-len("Sum"))
 	fmt.Printf("│ %s%s │ %-15s│ %-12d│ %-15s│ %-12d│ %-7.3f │\n",
-		"Sum", pad, ConvertUnit(size_sum), page_sum, ConvertUnit(cached_size_sum), cached_page_sum, (float64(cached_page_sum)/float64(page_sum))*100.00)
+		"Sum", pad, ConvertUnit(size_sum), page_sum, ConvertUnit(cached_size_sum), cached_page_sum, safePercent(cached_page_sum, page_sum))
 	fmt.Println(bot)
 }
 
@@ -133,7 +140,7 @@ func (stats PcStatusList) FormatPlain() {
 
 	pad = strings.Repeat(" ", maxName-len("Sum"))
 	fmt.Printf("%s%s  %-15s %-12d %-15s %-12d %-7.3f\n",
-		"Sum", pad, ConvertUnit(size_sum), page_sum, ConvertUnit(cached_size_sum), cached_page_sum, (float64(cached_page_sum)/float64(page_sum))*100.00)
+		"Sum", pad, ConvertUnit(size_sum), page_sum, ConvertUnit(cached_size_sum), cached_page_sum, safePercent(cached_page_sum, page_sum))
 }
 
 func (stats PcStatusList) FormatTerse() {
@@ -141,8 +148,12 @@ func (stats PcStatusList) FormatTerse() {
 	for _, pcs := range stats {
 		time := pcs.Timestamp.Unix()
 		mtime := pcs.Mtime.Unix()
+		name := pcs.Name
+		if strings.ContainsAny(name, ",\"") {
+			name = "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
+		}
 		fmt.Printf("%s,%d,%d,%d,%d,%d,%g\n",
-			pcs.Name, pcs.Size, time, mtime, pcs.Pages, pcs.Cached, pcs.Percent)
+			name, pcs.Size, time, mtime, pcs.Pages, pcs.Cached, pcs.Percent)
 	}
 }
 
