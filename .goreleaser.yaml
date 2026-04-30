@@ -24,7 +24,8 @@ builds:
       - -s -w
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     # Produces e.g. pgcacher_v0.4.0_Linux_x86_64.tar.gz, compatible with `uname`.
     name_template: >-
       {{ .ProjectName }}_v{{ .Version }}_
@@ -35,13 +36,13 @@ archives:
     files:
       - README.md
       - LICENSE
-      - docs/**/*
+      - docs/*.md
 
 checksum:
   name_template: 'checksums.txt'
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
